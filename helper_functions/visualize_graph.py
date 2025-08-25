@@ -1,5 +1,5 @@
-import networkx as nx         # for graph creation & analysis
-import matplotlib.pyplot as plt  # for drawing & saving figures
+import networkx as nx 
+import matplotlib.pyplot as plt  
 
 def visualize_graph(G, output_image="network.png"):
     plt.figure(figsize=(10, 10))

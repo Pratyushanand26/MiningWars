@@ -1,5 +1,5 @@
 from helper_functions import extract_network_data,generate_random_p2p_graph,visualize_graph
-import networkx as nx         # for graph creation & analysis
+import networkx as nx      
 
 def main():
     G = generate_random_p2p_graph()

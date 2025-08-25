@@ -1,5 +1,5 @@
 import random
-import networkx as nx         # for graph creation & analysis
+import networkx as nx    
 
 def generate_random_p2p_graph(min_peers=50, max_peers=100, min_deg=3, max_deg=6):
     attempts = 0  
