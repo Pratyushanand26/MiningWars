@@ -6,6 +6,8 @@ class Peer:
         self.is_fast = is_fast
         self.is_high_cpu = is_high_cpu
         self.hash_power = 2.0 if is_high_cpu else 1.0
+        # inside Peer.__init__, add:
+        self.block_arrival = {"genesis": 0.0}   # record arrival times (seconds); genesis at time 0
 
         # NEW: track coin balance
         self.balance = initial_balance

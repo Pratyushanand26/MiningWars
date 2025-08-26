@@ -22,6 +22,11 @@ class Simulator:
         # 1) Simulator clock
         self.time = 0.0
 
+        # at the top of __init__ (after self.time or after self.Ttx / self.I)
+        self.tx_counter = 0
+        self.block_counter = 0
+
+
         # 2) Event queue (min-heap by event.time)
         self.event_queue = []
 
@@ -37,23 +42,27 @@ class Simulator:
             peer = Peer(pid, is_fast=is_fast, is_high_cpu=is_high_cpu)
             self.peers[pid] = peer
 
+        genesis = Block("genesis", None, -1, [])
+        for peer in self.peers.values():
+            peer.block_tree["genesis"] = genesis
+            peer.heights["genesis"] = 0
+            peer.current_tip = "genesis"    
+
         # 5) Simulation parameters
         self.Ttx = Ttx  # mean TX interarrival
         self.I   = I    # mean block interval
 
         # 6) Schedule each peer's first TX_GEN and BLOCK_MINED
         for pid, peer in self.peers.items():
-            # When will this peer generate its first transaction?
+            # schedule first mining (inside the for pid, peer in self.peers.items() loop)
             t_tx = random.expovariate(1.0 / self.Ttx)
-            ev_tx = Event(t_tx, EVENT_TX_GEN, pid)
-            heapq.heappush(self.event_queue, ev_tx)
+            heapq.heappush(self.event_queue,Event(t_tx, EVENT_TX_GEN, pid))
 
-            # When will this peer mine its first block?
-            # Rate = peer.hash_power / I  => mean = I / hash_power
             rate = peer.hash_power / self.I
             t_blk = random.expovariate(rate)
-            ev_blk = Event(t_blk, EVENT_BLOCK_MINED, pid)
-            heapq.heappush(self.event_queue, ev_blk)
+            # attach the tip so the handler can detect if the tip changed since scheduling
+            heapq.heappush(self.event_queue,
+                        Event(t_blk, EVENT_BLOCK_MINED, pid, peer.current_tip))
 
     def run(self, end_time):
         """
@@ -66,6 +75,13 @@ class Simulator:
             self.time = ev.time
             # 3) Dispatch to the appropriate handler
             self.dispatch(ev)
+    def write_results(self, filename="results.txt"):
+        with open(filename, "w") as f:
+            for pid, peer in self.peers.items():
+                f.write(f"Peer {pid} arrivals:\n")
+                for blk, t in peer.block_arrival.items():
+                    f.write(f"  {blk} @ {t:.2f}\n")
+
 
     def dispatch(self, ev):
         """
@@ -83,7 +99,6 @@ class Simulator:
             # Unknown event type—ignore or raise error
             pass
 
-    # Placeholder handlers to be implemented next:
     def _handle_tx_gen(self, ev):
         peer = self.peers[ev.peer]
         # schedule next TX_GEN
@@ -103,93 +118,137 @@ class Simulator:
         peer.balance -= amount
         peer.mempool[tx.id] = tx
 
-        # forward to neighbors
+        # forward to neighbors, include 'from' so neighbors don't send back
         for nbr in self.adj[peer.id]:
-            base = self.rho[(min(peer.id,nbr), max(peer.id,nbr))]
+            base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
                 base *= 1.5
             recv_t = ev.time + base
             heapq.heappush(self.event_queue,
-                          Event(recv_t, EVENT_TX_RECV, nbr, tx))
+                        Event(recv_t, EVENT_TX_RECV, nbr, {"tx": tx, "from": peer.id}))
+
 
     def _handle_tx_recv(self, ev):
         peer = self.peers[ev.peer]
-        tx = ev.data
+        # ev.data now may be a dict with 'tx' and 'from'
+        if isinstance(ev.data, dict):
+            tx = ev.data["tx"]
+            from_peer = ev.data.get("from")
+        else:
+            tx = ev.data
+            from_peer = None
+
         if tx.id in peer.mempool:
             return
+
         peer.mempool[tx.id] = tx
+
         for nbr in self.adj[peer.id]:
-            if nbr == tx.origin:
+            if nbr == from_peer:
                 continue
-            base = self.rho[(min(peer.id,nbr), max(peer.id,nbr))]
+            base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
                 base *= 1.5
             recv_t = ev.time + base
             heapq.heappush(self.event_queue,
-                          Event(recv_t, EVENT_TX_RECV, nbr, tx))
+                        Event(recv_t, EVENT_TX_RECV, nbr, {"tx": tx, "from": peer.id}))
 
     def _handle_block_mined(self, ev):
         peer = self.peers[ev.peer]
+        # ev.data carries the tip the miner started on (we stored it when scheduling)
+        start_tip = ev.data if ev.data is not None else peer.current_tip
+
+        # if the tip changed while the peer was mining, abort this outcome and reschedule
+        if start_tip != peer.current_tip:
+            rate = peer.hash_power / self.I
+            next_t = ev.time + random.expovariate(rate)
+            # schedule a fresh mining attempt on the current tip
+            heapq.heappush(self.event_queue,
+                        Event(next_t, EVENT_BLOCK_MINED, peer.id, peer.current_tip))
+            return
+
+        # Successful mine on start_tip (which equals current_tip)
         blk_id = f"blk{self.block_counter}"
         self.block_counter += 1
-        parent = peer.current_tip
+        parent = start_tip
         txns = list(peer.mempool.values())
+
         block = Block(blk_id, parent, peer.id, txns)
 
         # update miner state
         peer.block_tree[blk_id] = block
-        height = peer.heights[parent] + 1
-        peer.heights[blk_id] = height
+        peer.heights[blk_id] = peer.heights.get(parent, 0) + 1
         peer.current_tip = blk_id
         peer.mined_blocks.append(blk_id)
 
-        # coinbase and TX payouts
+        # record arrival time for miner (local)
+        peer.block_arrival[blk_id] = ev.time
+
+        # coinbase + transaction payouts (credit receiver balances)
         peer.balance += 1
         for tx in txns:
             self.peers[tx.receiver].balance += tx.amount
 
+        # clear mempool locally (these txns were included)
         peer.mempool.clear()
 
-        # broadcast block
+        # broadcast to neighbours (include block as payload)
         for nbr in self.adj[peer.id]:
-            base = self.rho[(min(peer.id,nbr), max(peer.id,nbr))]
+            base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
                 base *= 1.5
             recv_t = ev.time + base
             heapq.heappush(self.event_queue,
-                          Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
+                        Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
 
-        # schedule next mining
+        # schedule next mining attempt (attach current tip)
         rate = peer.hash_power / self.I
         next_t = ev.time + random.expovariate(rate)
         heapq.heappush(self.event_queue,
-                      Event(next_t, EVENT_BLOCK_MINED, peer.id))
+                    Event(next_t, EVENT_BLOCK_MINED, peer.id, peer.current_tip))
+
 
     def _handle_block_recv(self, ev):
         peer = self.peers[ev.peer]
+
+        # ev.data may be a Block (we send plain Block objects); handle gracefully
         block = ev.data
         if block.id in peer.block_tree:
             return
+
+        # add block to local tree
         peer.block_tree[block.id] = block
         parent = block.parent
         peer.heights[block.id] = peer.heights.get(parent, 0) + 1
 
-        # fork resolution: longest-chain
-        if peer.heights[block.id] > peer.heights[peer.current_tip]:
+        # record arrival time
+        peer.block_arrival[block.id] = ev.time
+
+        # apply coinbase + tx payouts locally (credit miner + receivers)
+        # (miner already did this locally when they mined; other peers must do it on receipt)
+        self.peers[block.miner].balance += 1
+        for tx in block.txns:
+            self.peers[tx.receiver].balance += tx.amount
+            # remove included txns from this peer's mempool (if present)
+            if tx.id in peer.mempool:
+                del peer.mempool[tx.id]
+
+        # fork resolution: follow longest chain
+        if peer.heights[block.id] > peer.heights.get(peer.current_tip, 0):
             peer.current_tip = block.id
-            # restart mining on new tip
+            # restart/schedule mining on the new tip (attach new tip)
             rate = peer.hash_power / self.I
             next_t = ev.time + random.expovariate(rate)
             heapq.heappush(self.event_queue,
-                          Event(next_t, EVENT_BLOCK_MINED, peer.id))
+                        Event(next_t, EVENT_BLOCK_MINED, peer.id, peer.current_tip))
 
-        # forward block
+        # forward block to neighbours (avoid immediate echo back to miner)
         for nbr in self.adj[peer.id]:
             if nbr == block.miner:
                 continue
-            base = self.rho[(min(peer.id,nbr), max(peer.id,nbr))]
+            base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
                 base *= 1.5
             recv_t = ev.time + base
             heapq.heappush(self.event_queue,
-                          Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
+                        Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
