@@ -40,6 +40,15 @@ event ConfigUpdate(bytes32 what,uint256 value);
 
 //modifiers
 
+modifier onlyOwner(){
+    require(msg.sender==owner,"You are not the owner");
+    _;
+}
+
+modifier onlyRegistered(){
+    require(registered[msg.sender]==true,"You are not registered");
+    _;
+}
 
 //functions
     function registerMiner() public {
@@ -49,8 +58,7 @@ event ConfigUpdate(bytes32 what,uint256 value);
         emit MinerRegistered(msg.sender);
     }
 
-    function submitBlock(uint256 difficulty) public {
-        require(registered[msg.sender], "Not registered");
+    function submitBlock(uint256 difficulty) onlyRegistered() public {
         require(difficulty > 0,"difficulty should be greater than zero");
         blockCounter += 1;
 
@@ -73,11 +81,22 @@ event ConfigUpdate(bytes32 what,uint256 value);
 
     function getBlock(uint256 id) public view returns(BlockSubmission memory){
        require(id > 0 && id <= blockCounter, "Invalid block ID");
-
        return Allblocks[id-1];
     }
 
     function getAllBlocks() public view returns (BlockSubmission[] memory){
         return Allblocks;
+    }
+
+    function setToken(address token) onlyOwner() public{
+        rewardsToken=token;
+    }
+
+    function setPerBlockReward(uint256 amount) onlyOwner()public{
+        perBlockReward=amount;
+    } 
+
+    function setSeasonBudget(uint256 budget) onlyOwner() public{
+        seasonBudget=budget;
     }
 }
