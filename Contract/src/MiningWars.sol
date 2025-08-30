@@ -21,7 +21,7 @@ contract MiningWars {
     uint256 public blockCounter = 0;
     mapping(address => uint256) public scores;
     mapping(address => bool) public registered;
-    mapping(address => uint256[]) minerBlocks;
+    mapping(address => uint256[]) public minerBlocks;
     mapping(uint256 => mapping(address => uint256)) public seasonScore;
     mapping(uint256 => address[]) public seasonParticipants;
     mapping(uint256 => mapping(address => bool))private isSeasonParticipant;
@@ -70,6 +70,7 @@ modifier onlyRegistered(){
 
 modifier seasonActive(){
     require(block.timestamp <= seasonEndTime,"Season has ended");
+    require(block.timestamp >= seasonStartTime, "Season not yet started");
     _;
 }
 
@@ -146,6 +147,7 @@ function getAllBlocks() public view returns (BlockSubmission[] memory){
 
 function setToken(address token) onlyOwner() public{
     rewardsToken=token;
+    emit TokenSet(token);
 }
 
 function setPerBlockReward(uint256 amount) onlyOwner()public{
