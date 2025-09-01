@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 //interfaces
 
-interface IMyToken {
+interface IMiningToken {
     function mint(address to, uint256 amount) external;
 }
 
@@ -113,7 +113,7 @@ function submitBlock(uint256 difficulty) onlyRegistered() seasonActive() public 
     _updateLeaderboard(msg.sender);
     minerBlocks[msg.sender].push(blockCounter);
     emit BlockMined(blockCounter,msg.sender,difficulty);
-    IMyToken(rewardsToken).mint(msg.sender,perBlockReward);
+    IMiningToken(rewardsToken).mint(msg.sender,perBlockReward);
     emit RewardPaid(msg.sender,perBlockReward,keccak256("PER_BLOCK"));
 }
 
@@ -174,15 +174,15 @@ function setSeasonPrizes(uint256 _first, uint256 _second, uint256 _third) extern
 function endSeasonAndDistribute() external onlyOwner seasonEnded {
     require(rewardsToken != address(0), "Rewards token not set");
     if (first != address(0)){
-       IMyToken(rewardsToken).mint(first, firstPrize);
+       IMiningToken(rewardsToken).mint(first, firstPrize);
        emit RewardPaid(first,firstPrize,keccak256("FIRST_WINNER"));
     }
     if(second !=address(0)){
-       IMyToken(rewardsToken).mint(second, secondPrize);
+       IMiningToken(rewardsToken).mint(second, secondPrize);
        emit RewardPaid(second, secondPrize,keccak256("SECOND_WINNER"));
     }
     if(third!=address(0)){
-       IMyToken(rewardsToken).mint(third, thirdPrize);
+       IMiningToken(rewardsToken).mint(third, thirdPrize);
        emit RewardPaid(third, thirdPrize,keccak256("THIRD_WINNER"));
     }
 

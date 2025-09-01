@@ -2,6 +2,11 @@ import random
 import heapq
 from helper_classes import Block, Event, Peer, Transaction
 from helper_functions import extract_network_data, generate_random_p2p_graph, visualize_graph
+from web3_client import send_contract_tx
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- EVENT TYPES ---
 EVENT_TX_GEN      = "TX_GEN"      # schedule a new transaction creation
@@ -24,6 +29,18 @@ class Simulator:
 
         # network topology
         self.adj, self.rho = extract_network_data(G)
+
+        self.onchain = True  # set False if you want to disable on-chain calls
+        self.owner_addr = os.getenv("MINER0_ADDR")  # or OWNER_ADDR
+        self.owner_pk = os.getenv("OWNER_PRIVKEY")
+
+        self.peer_accounts = {}
+        for pid in self.peers:
+            addr = os.getenv(f"PEER_{pid}_ADDR")
+            pk = os.getenv(f"PEER_{pid}_PRIVKEY")
+            if addr and pk:
+                self.peer_accounts[pid] = {"addr": addr, "pk": pk}
+
 
         # create peers
         self.peers = {}
@@ -217,7 +234,7 @@ class Simulator:
         # sync local balances for miner and receivers (so their local view is up-to-date)
         affected_pids = {peer.id} | {tx.receiver for tx in txns}
         for pid in affected_pids:
-            self.peers[pid].balance = self.ledger.get(pid, self.peers[pid].balance)
+            self.peers[pid].balance = self.ledger.get(pid, self.peers[pid].balance)    
 
         # remove included txs from mempool of all peers (prevents re-inclusion)
         for tx in txns:
@@ -337,6 +354,17 @@ class Simulator:
         # reset season counters
         self.season_scores = {pid: 0 for pid in self.peers}
         self.season_block_counter = 0
+
+        if self.onchain:
+            try:
+                winners = [Web3.to_checksum_address(w) for w in winners]  # if winners are addresses
+                # if your contract expects addresses & amounts:
+                fn = miningwars.functions.endSeasonAndDistribute(winners, rewards)
+                receipt = send_contract_tx(self.owner_addr, self.owner_pk, fn)
+                print("endSeason tx status:", receipt.status)
+            except Exception as e:
+                print("on-chain end season failed:", e)
+
 
         # OPTIONAL: hook to call your smart contract via Web3.py (mint/distribute)
         # Example:
