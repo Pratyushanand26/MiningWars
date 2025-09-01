@@ -1,10 +1,15 @@
+# simulator.py
 import random
 import heapq
+from copy import deepcopy
 from helper_classes import Block, Event, Peer, Transaction
 from helper_functions import extract_network_data, generate_random_p2p_graph, visualize_graph
-from web3_client import send_contract_tx
-import os
 from dotenv import load_dotenv
+
+# web3 / on-chain helpers
+from web3_client import send_signed_tx, miningwars, miningtoken, w3
+from web3 import Web3
+import os
 
 load_dotenv()
 
@@ -23,6 +28,9 @@ class Simulator:
         self.block_reward = 1
         self.event_queue = []
 
+        # logging for later consumption (FastAPI / debugging)
+        self.logs = []
+
         # simulation params (assign early)
         self.Ttx = Ttx
         self.I = I
@@ -30,17 +38,18 @@ class Simulator:
         # network topology
         self.adj, self.rho = extract_network_data(G)
 
-        self.onchain = True  # set False if you want to disable on-chain calls
-        self.owner_addr = os.getenv("MINER0_ADDR")  # or OWNER_ADDR
+        # on-chain toggle and owner creds
+        self.onchain = os.getenv("ONCHAIN", "true").lower() == "true"
+        owner_addr_raw = os.getenv("OWNER_ADDR")
+        self.owner_addr = Web3.to_checksum_address(owner_addr_raw) if owner_addr_raw else None
         self.owner_pk = os.getenv("OWNER_PRIVKEY")
 
-        self.peer_accounts = {}
-        for pid in self.peers:
-            addr = os.getenv(f"PEER_{pid}_ADDR")
-            pk = os.getenv(f"PEER_{pid}_PRIVKEY")
-            if addr and pk:
-                self.peer_accounts[pid] = {"addr": addr, "pk": pk}
+        # optional auto-register toggle
+        self.auto_register_peers = os.getenv("AUTO_REGISTER_PEERS", "true").lower() == "true"
 
+        if self.onchain:
+            if not self.owner_addr or not self.owner_pk:
+                raise RuntimeError("OWNER_ADDR and OWNER_PRIVKEY must be set in .env for onchain owner ops")
 
         # create peers
         self.peers = {}
@@ -49,10 +58,32 @@ class Simulator:
             is_high_cpu = (random.random() < high_cpu_frac)
             peer = Peer(pid, is_fast=is_fast, is_high_cpu=is_high_cpu)
             # ensure peer has required attributes in constructor: balance, hash_power, mempool, etc.
+            # e.g., Peer should initialize: balance, hash_power, mempool (dict), block_tree (dict), heights (dict), mined_blocks (list), block_arrival (dict)
             self.peers[pid] = peer
 
+        # peer -> account mapping using .env names MINER{pid}_ADDR / MINER{pid}_PRIVKEY
+        self.peer_accounts = {}
+        for pid in self.peers:
+            addr = os.getenv(f"MINER{pid}_ADDR")
+            pk = os.getenv(f"MINER{pid}_PRIVKEY")
+            if addr and pk:
+                self.peer_accounts[pid] = {"addr": Web3.to_checksum_address(addr), "pk": pk}
+                # Register on-chain immediately (optional)
+                if self.onchain and self.auto_register_peers:
+                    try:
+                        fn = miningwars.functions.registerMiner()
+                        tx = fn.build_transaction({"from": self.peer_accounts[pid]["addr"]})
+                        receipt = send_signed_tx(self.peer_accounts[pid]["addr"], self.peer_accounts[pid]["pk"], tx)
+                        msg = f"On-chain registerMiner for peer {pid} succeeded, status: {receipt.status}"
+                        print(msg)
+                        self.logs.append(msg)
+                    except Exception as e:
+                        err = f"onchain register failed for peer {pid}: {e}"
+                        print(err)
+                        self.logs.append(err)
+
         # authoritative ledger (after peers exist)
-        self.ledger = {pid: self.peers[pid].balance for pid in self.peers}
+        self.ledger = {pid: getattr(self.peers[pid], "balance", 0) for pid in self.peers}
 
         # genesis block for every peer's local view
         genesis = Block("genesis", None, -1, [])
@@ -62,7 +93,7 @@ class Simulator:
             peer.current_tip = "genesis"
 
         # difficulty & retarget params
-        total_hash = sum(p.hash_power for p in self.peers.values())
+        total_hash = sum(getattr(p, "hash_power", 0) for p in self.peers.values())
         self.D = self.I * total_hash if total_hash > 0 else 1.0
         self.retarget_interval = 10
         self.min_adjust = 0.5
@@ -70,12 +101,10 @@ class Simulator:
         self.recent_block_timestamps = []
 
         # season params
-        self.season_block_length = 50
+        self.season_block_length = int(os.getenv("SEASON_BLOCK_LENGTH", "50"))
         self.season_block_counter = 0
         self.season_scores = {pid: 0 for pid in self.peers}
 
-        # a set to help avoid enqueueing mining events with zero rate
-        # (we schedule only when rate > 0)
         # schedule initial events
         for pid, peer in self.peers.items():
             t_tx = random.expovariate(1.0 / self.Ttx) if self.Ttx > 0 else float("inf")
@@ -88,11 +117,19 @@ class Simulator:
                                Event(t_blk, EVENT_BLOCK_MINED, pid, peer.current_tip))
 
 
+    def peer_id_to_addr(self, pid):
+        """Return (addr, pk) if mapped, else (None, None)."""
+        info = self.peer_accounts.get(pid)
+        if not info:
+            return None, None
+        return info["addr"], info["pk"]
+
+
     def _miner_rate(self, peer):
         # lambda_i = H_i / D
         if getattr(self, "D", 0) <= 0:
             return peer.hash_power if getattr(peer, "hash_power", 0) > 0 else 0.0
-        return peer.hash_power / self.D if peer.hash_power > 0 else 0.0
+        return peer.hash_power / self.D if getattr(peer, "hash_power", 0) > 0 else 0.0
 
 
     def run(self, end_time):
@@ -152,7 +189,7 @@ class Simulator:
         # add to origin mempool
         peer.mempool[tx.id] = tx
 
-        # forward to neighbors (include 'from' so neighbors don't echo back)
+        # forward to neighbors, include 'from' so neighbors don't echo back
         for nbr in self.adj[peer.id]:
             base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
@@ -228,13 +265,35 @@ class Simulator:
 
         # transaction payouts (credit receivers)
         for tx in txns:
-            # note: send amounts to receivers in ledger
+            # send amounts to receivers in ledger
             self.ledger[tx.receiver] = self.ledger.get(tx.receiver, 0) + tx.amount
 
         # sync local balances for miner and receivers (so their local view is up-to-date)
         affected_pids = {peer.id} | {tx.receiver for tx in txns}
         for pid in affected_pids:
-            self.peers[pid].balance = self.ledger.get(pid, self.peers[pid].balance)    
+            self.peers[pid].balance = self.ledger.get(pid, self.peers[pid].balance)
+
+        # determine a sensible difficulty to report on-chain
+        block_difficulty = getattr(peer, "hash_power", 100)
+        if txns:
+            tx_d = sum(getattr(t, "difficulty", 0) for t in txns)
+            if tx_d > 0:
+                block_difficulty = tx_d
+
+        # inside _handle_block_mined, after ledger update -> submitBlock on-chain (if mapped)
+        if self.onchain and peer.id in self.peer_accounts:
+            acct = self.peer_accounts[peer.id]
+            try:
+                fn = miningwars.functions.submitBlock(block_difficulty)
+                tx = fn.build_transaction({"from": acct["addr"]})
+                receipt = send_signed_tx(acct["addr"], acct["pk"], tx)
+                msg = f"submitBlock onchain tx status: {receipt.status} (peer {peer.id})"
+                print(msg)
+                self.logs.append(msg)
+            except Exception as e:
+                err = f"submitBlock onchain failed for peer {peer.id}: {e}"
+                print(err)
+                self.logs.append(err)
 
         # remove included txs from mempool of all peers (prevents re-inclusion)
         for tx in txns:
@@ -252,29 +311,30 @@ class Simulator:
         # track timestamp for retarget
         self.recent_block_timestamps.append(ev.time)
 
-        # broadcast the new block to neighbors (payload is the block object)
+        # broadcast the new block to neighbors (payload is a deepcopy of the block to avoid mutation issues)
         for nbr in self.adj[peer.id]:
             base = self.rho[(min(peer.id, nbr), max(peer.id, nbr))]
             if not peer.is_fast:
                 base *= 1.5
             recv_t = ev.time + base
-            # consider serializing/copying block if you plan to mutate it later
             heapq.heappush(self.event_queue,
-                           Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
+                           Event(recv_t, EVENT_BLOCK_RECV, nbr, deepcopy(block)))
 
         # retarget difficulty if needed
         if len(self.recent_block_timestamps) >= self.retarget_interval:
             t0 = self.recent_block_timestamps[-self.retarget_interval]
             t1 = self.recent_block_timestamps[-1]
             # observed average interval between consecutive blocks in the window
+            # (note: retarget based on observed_interval / target I)
             observed_interval = (t1 - t0) / max(1, (self.retarget_interval - 1))
             factor = 1.0
             if observed_interval > 0:
                 factor = observed_interval / self.I
             factor = max(self.min_adjust, min(self.max_adjust, factor))
+            oldD = self.D
             self.D = self.D * factor
-            # trim timestamps to keep only recent window
             self.recent_block_timestamps = self.recent_block_timestamps[-self.retarget_interval:]
+            self.logs.append(f"Retarget: D {oldD:.3f} -> {self.D:.3f} (factor {factor:.3f})")
 
         # end-of-season check
         if self.season_block_counter >= self.season_block_length:
@@ -304,12 +364,8 @@ class Simulator:
 
         # update this peer's local balances from ledger for affected participants
         # (ledger already updated at mining time)
-        if block.miner in self.ledger:
-            # optionally update this peer's local view of the miner's balance
-            # (we set only peer's own balance or balances of receivers)
-            pass
         for tx in block.txns:
-            # update receiver's local view if this peer is the receiver, or if you prefer globally:
+            # update receiver's local view if this peer is the receiver
             if tx.receiver == peer.id:
                 peer.balance = self.ledger.get(tx.receiver, peer.balance)
             # remove included txns from this peer's mempool (if present)
@@ -334,7 +390,7 @@ class Simulator:
                 base *= 1.5
             recv_t = ev.time + base
             heapq.heappush(self.event_queue,
-                           Event(recv_t, EVENT_BLOCK_RECV, nbr, block))
+                           Event(recv_t, EVENT_BLOCK_RECV, nbr, deepcopy(block)))
 
 
     def _end_season(self):
@@ -344,7 +400,9 @@ class Simulator:
         rewards = [3, 2, 1]  # example reward amounts for 1st/2nd/3rd
 
         # log
-        print(f"[SEASON END] block_counter={self.block_counter}, winners={ranked[:3]}")
+        msg = f"[SEASON END] block_counter={self.block_counter}, winners={ranked[:3]}"
+        print(msg)
+        self.logs.append(msg)
 
         # credit ledger & sync local views
         for pid, amt in zip(winners, rewards):
@@ -355,23 +413,21 @@ class Simulator:
         self.season_scores = {pid: 0 for pid in self.peers}
         self.season_block_counter = 0
 
+        # on-chain: call contract owner to distribute prizes
         if self.onchain:
             try:
-                winners = [Web3.to_checksum_address(w) for w in winners]  # if winners are addresses
-                # if your contract expects addresses & amounts:
-                fn = miningwars.functions.endSeasonAndDistribute(winners, rewards)
-                receipt = send_contract_tx(self.owner_addr, self.owner_pk, fn)
-                print("endSeason tx status:", receipt.status)
+                fn = miningwars.functions.endSeasonAndDistribute()
+                tx = fn.build_transaction({"from": self.owner_addr})
+                receipt = send_signed_tx(self.owner_addr, self.owner_pk, tx)
+                msg = f"onchain endSeasonAndDistribute status: {receipt.status}"
+                print(msg)
+                self.logs.append(msg)
             except Exception as e:
-                print("on-chain end season failed:", e)
+                err = f"onchain endSeason failed: {e}"
+                print(err)
+                self.logs.append(err)
 
+        # optional: return winners/rewards for external use
+        return winners, rewards
 
-        # OPTIONAL: hook to call your smart contract via Web3.py (mint/distribute)
-        # Example:
-        # self._call_contract_end_season_and_distribute(winners, rewards)
-
-
-    # OPTIONAL placeholder for Web3 integration:
-    # def _call_contract_end_season_and_distribute(self, winners, rewards):
-    #     # use web3.py to call your deployed contract's endSeasonAndDistribute(winners, amounts)
-    #     pass
+    # end of Simulator class
