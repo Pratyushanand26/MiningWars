@@ -39,7 +39,7 @@ class Simulator:
         self.adj, self.rho = extract_network_data(G)
 
         # on-chain toggle and owner creds
-        self.onchain = os.getenv("ONCHAIN", "true").lower() == "true"
+        self.onchain = os.getenv("ONCHAIN")
         owner_addr_raw = os.getenv("OWNER_ADDR")
         self.owner_addr = Web3.to_checksum_address(owner_addr_raw) if owner_addr_raw else None
         self.owner_pk = os.getenv("OWNER_PRIVKEY")
@@ -284,7 +284,7 @@ class Simulator:
         if self.onchain and peer.id in self.peer_accounts:
             acct = self.peer_accounts[peer.id]
             try:
-                fn = miningwars.functions.submitBlock(block_difficulty)
+                fn = miningwars.functions.submitBlock(int(block_difficulty))
                 tx = fn.build_transaction({"from": acct["addr"]})
                 receipt = send_signed_tx(acct["addr"], acct["pk"], tx)
                 msg = f"submitBlock onchain tx status: {receipt.status} (peer {peer.id})"

@@ -1,4 +1,4 @@
-import Block
+from .Block import Block
 
 class Peer:
     def __init__(self, peer_id, is_fast=True, is_high_cpu=True, initial_balance=100):
@@ -16,7 +16,7 @@ class Peer:
         self.mempool = {}
 
         # block tree and heights
-        self.block_tree = {"genesis": Block.Block("genesis", None, None, [])}
+        self.block_tree = {"genesis": Block("genesis", None, None, [])}
         self.heights = {"genesis": 0}
         self.current_tip = "genesis"
 

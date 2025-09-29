@@ -56,3 +56,5 @@ def send_signed_tx(sender_addr: str, sender_pk: str, tx_dict: dict, wait_receipt
 def call_view(fn_call):
     """Call a read-only function: pass contract.functions.foo(...)"""
     return fn_call.call()
+
+print("done")

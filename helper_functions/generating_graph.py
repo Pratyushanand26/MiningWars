@@ -1,23 +1,28 @@
 import random
 import networkx as nx    
 
-def generate_random_p2p_graph(min_peers=50, max_peers=100, min_deg=3, max_deg=6):
+def generate_random_p2p_graph(min_peers=4, max_peers=5, min_deg=1, max_deg=2):
+    print("started G")
     attempts = 0  
     while True:
         attempts += 1
 
         # Choose number of peers
         n = random.randint(min_peers, max_peers)
+        print(n)
 
         # Assign target degrees
         target_degrees = {
             node: random.randint(min_deg, max_deg)
             for node in range(n)
         }
+        print("started G")
 
         # Create empty graph with n nodes
         G = nx.Graph()
+        print("started G")
         G.add_nodes_from(range(n))
+        print("started G")
 
         # Add edges until targets reached or no valid pair remains
         while True:
@@ -30,6 +35,7 @@ def generate_random_p2p_graph(min_peers=50, max_peers=100, min_deg=3, max_deg=6)
                 break
 
             u, v = random.sample(pool, 2)
+
             if G.has_edge(u, v):
                 continue
 
@@ -37,6 +43,8 @@ def generate_random_p2p_graph(min_peers=50, max_peers=100, min_deg=3, max_deg=6)
                 G.add_edge(u, v)
             else:
                 break
+
+        print("started G")    
 
         # Validate degree constraints and connectivity
         degrees_ok = all(

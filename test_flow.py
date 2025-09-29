@@ -52,11 +52,18 @@ print("setSeasonPrizes:", receipt.status)
 # redeploy contract with small seasonDuration. For now, we assume season has ended.
 
 # 7) end season (owner)
+# NOTE: to end season, we must be past seasonEndTime. For dev, fast-forward time:
+print("⏩ Advancing blockchain time by 2 days...")
+w3.provider.make_request("evm_increaseTime", [2 * 24 * 60 * 60])  # +2 days
+w3.provider.make_request("evm_mine", [])
+
+# 7) end season (owner)
 try:
     receipt = owner_tx(miningwars.functions.endSeasonAndDistribute())
     print("endSeasonAndDistribute:", receipt.status)
 except Exception as e:
-    print("endSeason call failed (likely season not ended):", e)
+    print("endSeason call failed:", e)
+
 
 # 8) check token balance of miner1
 balance = call_view(miningtoken.functions.balanceOf(MINER1_ADDR))
